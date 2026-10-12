@@ -191,7 +191,15 @@ headers and exposes server software version telemetry.
 
 * **Adding New Checks**: Extend `scanner.py` with custom checks (e.g., DNSSEC validation, subdomain takeover recon, HTTP/2 or HTTP/3 checks).
 * **Adding New Skills**: Add procedure documentation to `skills/<skill-name>/SKILL.md`. Map associated keywords in `agent.py::keywords_from_scan()` so relevant procedures are auto-injected into the prompt.
-* **CI/CD Integration**: Web Security Agent ships with a GitHub Actions workflow in [`.github/workflows/python-app.yml`](file:///.github/workflows/python-app.yml) for automated linting and tests.
+* **CI/CD Integration**: Web Security Agent ships with GitHub Actions workflows:
+  * [`.github/workflows/python-app.yml`](.github/workflows/python-app.yml) for automated linting and tests.
+  * [`.github/workflows/secrets-scan.yml`](.github/workflows/secrets-scan.yml) for automated Gitleaks secret leak prevention on pushes and PRs.
+* **Local Pre-Commit Hook**: Install client-side hooks to prevent accidental credential commits:
+  ```bash
+  pip install pre-commit
+  pre-commit install
+  ```
+  Custom false-positive exclusions can be tuned in [`.gitleaks.toml`](.gitleaks.toml).
 
 ---
 
