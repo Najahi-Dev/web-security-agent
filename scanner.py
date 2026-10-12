@@ -97,14 +97,25 @@ def check_tls(hostname, port=443):
 
 
 def check_exposed_paths(base_url):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     findings = []
-    for path in COMMON_EXPOSED_PATHS:
+    
+    def _check(path):
         try:
             resp = requests.get(base_url.rstrip("/") + path, timeout=TIMEOUT)
             if resp.status_code == 200:
-                findings.append({"path": path, "status_code": resp.status_code})
+                return {"path": path, "status_code": resp.status_code}
         except requests.RequestException:
-            continue
+            pass
+        return None
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_check, p): p for p in COMMON_EXPOSED_PATHS}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                findings.append(res)
+    findings.sort(key=lambda x: x["path"])
     return findings
 
 

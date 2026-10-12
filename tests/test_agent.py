@@ -42,3 +42,17 @@ def test_build_system_prompt_filters_exploits():
     assert "performing-security-headers-audit" in prompt
     assert "exploiting-sql-injection" not in prompt
     assert "defensive cybersecurity engineer" in prompt
+
+
+def test_sanitize_and_validate_url():
+    """Verify URL normalization and validation."""
+    from agent import sanitize_url, is_valid_url
+
+    assert sanitize_url("example.com") == "https://example.com"
+    assert sanitize_url("http://example.com") == "http://example.com"
+    assert sanitize_url("https://example.com/path") == "https://example.com/path"
+
+    assert is_valid_url("https://example.com") is True
+    assert is_valid_url("http://test.co.uk") is True
+    assert is_valid_url("not_a_url") is False
+    assert is_valid_url("") is False

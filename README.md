@@ -131,27 +131,35 @@ ANTHROPIC_API_KEY=sk-ant-your_anthropic_api_key_here
 
 ## 💻 Usage
 
-Run the agent against an authorized web property:
+### 🎮 Interactive Console Mode *(Recommended)*
+
+Simply run `agent.py` to launch the interactive terminal console application:
 
 ```bash
-# Run audit using default model (Gemini or Claude based on available API key)
+python agent.py
+```
+
+The interactive console application provides:
+* 🌟 **Stylized Welcome Banner & Diagnostics**: Displays active LLM provider, skill library status, and scope policy.
+* ⌨️ **Smart URL Input & Normalization**: Automatically validates target URL format (e.g. typing `mysite.com` automatically normalizes to `https://mysite.com`).
+* ⏳ **Real-Time Animated Spinners**: Live loading indicators for every reconnaissance phase (HTTP headers, SSL/TLS audit, exposed file probes, skill matching, and AI synthesis).
+* 📊 **Reconnaissance Findings Matrix**: Formatted summary table of status codes, missing headers, TLS lifecycle, and cookies.
+* 🛡️ **Terminal Markdown Presentation**: Syntax-highlighted, rich-bordered report display directly in your console.
+* 💾 **Multi-Format Report Export Menu**:
+  * `[1]` Save as Markdown (`.md`)
+  * `[2]` Export as standalone dark-mode HTML (`.html`)
+  * `[3]` Export raw scan data as JSON (`.json`)
+  * `[4]` Save all formats at once (`.md`, `.html`, `.json`)
+  * `[5]` Open interactive HTML report in default browser
+  * `[6]` Audit another website in continuous loop
+
+### ⚡ Direct Target Mode
+
+You can also pass a target URL directly:
+
+```bash
 python agent.py https://your-site.com
 ```
-
-### Advanced CLI Flags
-
-```bash
-# Explicitly choose Claude
-python agent.py https://your-site.com --claude
-
-# Explicitly choose Gemini
-python agent.py https://your-site.com --gemini
-
-# Specify a custom model
-python agent.py https://your-site.com --model gemini-3.5-flash
-```
-
-When execution completes, a full report is printed to your console and exported to [`security_report.md`](file:///d:/Projects/web-security-agent/security_report.md).
 
 ---
 
