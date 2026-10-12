@@ -13,6 +13,9 @@ def test_load_all_skills():
     assert "description" in first
     assert "body" in first
     assert "tags" in first
+    assert "category" in first
+    assert "display_title" in first
+    assert "short_desc" in first
     assert isinstance(first["tags"], list)
 
 

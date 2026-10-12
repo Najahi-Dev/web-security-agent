@@ -53,9 +53,15 @@ from scanner import (
     check_missing_security_headers,
     check_tls,
     check_exposed_paths,
+    run_targeted_skill_probes,
     SECURITY_HEADERS,
 )
-from skills_loader import load_all_skills, pick_relevant_skills, build_catalog_summary
+from skills_loader import (
+    load_all_skills,
+    pick_relevant_skills,
+    build_catalog_summary,
+    interactive_select_skills,
+)
 from html_exporter import generate_html_report
 
 console = Console()
@@ -90,34 +96,78 @@ def keywords_from_scan(scan):
     return kws
 
 
-def build_system_prompt(relevant_skills, full_catalog):
-    """Focus on defensive, hardening and remediation skills."""
+def build_system_prompt(relevant_skills, full_catalog=""):
+    """Focus on defensive, hardening and remediation skills for user-selected domains."""
     defensive_skills = [
         s for s in relevant_skills if not s.get("name", "").startswith("exploiting-")
     ]
-    skill_procedures = "\n\n---\n\n".join(
-        f"## Skill: {s['name']}\n{s['description']}\n\n{s['body']}"
-        for s in defensive_skills
-    )
+    exploit_skills = [
+        s for s in relevant_skills if s.get("name", "").startswith("exploiting-")
+    ]
+
+    skill_blocks = []
+    for s in defensive_skills:
+        title = s.get("display_title") or s.get("name")
+        cat = s.get("category", "SecOps")
+        body = s.get("body", "")
+        skill_blocks.append(f"### Skill Procedure [{cat}]: {title}\nDescription: {s.get('description', '')}\n\n{body}")
+
+    for s in exploit_skills:
+        title = s.get("display_title") or s.get("name", "").replace("exploiting-", "Defending Against ")
+        cat = s.get("category", "Vulnerability Defense")
+        skill_blocks.append(
+            f"### Defensive Audit Focus [{cat}]: {title}\n"
+            f"Audit Objective: Evaluate application and server configuration resilience against {s.get('description', '')}. "
+            f"Provide concrete input sanitization, WAF rules, and defensive architecture to prevent this vulnerability class."
+        )
+
+    skill_procedures = "\n\n---\n\n".join(skill_blocks)
+
+    skill_names_list = []
+    for i, s in enumerate(relevant_skills, 1):
+        name = s.get("name", "")
+        if name.startswith("exploiting-"):
+            clean_title = s.get("display_title") or name.replace("exploiting-", "Defending Against ").replace("-", " ").title()
+        else:
+            clean_title = s.get("display_title") or name
+        skill_names_list.append(f"{i}. [{s.get('category', 'SecOps')}] {clean_title}")
+    skill_names_str = "\n".join(skill_names_list)
 
     return f"""You are a defensive cybersecurity engineer and server hardening assistant.
 You help a developer audit and harden web applications THEY OWN and manage.
 You only provide defensive guidance, configuration snippets (e.g. Nginx, Apache, Cloudflare), and remediation steps.
 Never provide exploit payloads or attack steps.
 
-RELEVANT DEFENSIVE SKILL PROCEDURES:
+MANDATORY AUDIT SCOPE:
+The user has specifically chosen the following {len(relevant_skills)} cybersecurity skills to audit this system against:
+{skill_names_str}
+
+PROCEDURES & BENCHMARKS FOR CHOSEN SKILLS:
 {skill_procedures}
 
-Using the server configuration audit data provided, write a structured hardening report with:
-1. A short summary (2-3 sentences) of overall risk level.
-2. A prioritized findings list (Critical / High / Medium / Low), each with:
-   - What was found
-   - Why it matters
-   - Concrete configuration fix or directive, citing relevant skills where applicable.
-3. Hardening recommendations for additional defense-in-depth."""
+CRITICAL REPORT STRUCTURE REQUIREMENTS:
+Your audit report MUST be structured directly around the chosen skills. Do NOT output a generic report. Follow this exact format:
+
+# Security Audit & Hardening Report
+
+## 1. Executive Summary & Posture Rating
+- Overall risk level for the audited domains (Critical / High / Medium / Low / Hardened).
+- Summary (3-4 sentences) evaluating the application against the user's chosen audit scope.
+
+## 2. In-Depth Analysis of Selected Security Skills
+(You MUST include a dedicated, detailed subsection for EACH of the {len(relevant_skills)} chosen skills above!)
+For EACH chosen skill:
+### [Skill Number & Title]
+- **Current Assessment Status:** [Critical / High / Medium / Low / Hardened / Warning]
+- **Reconnaissance & Probe Observations:** Specific technical evidence observed (headers, cookies, TLS ciphers, probe responses).
+- **Vulnerability & Threat Analysis:** Real-world impact if an attacker attempts this vector against this application.
+- **Production Remediation Directives:** Concrete, copy-pasteable configuration blocks (Nginx/Apache/Cloudflare directives, code changes, or middleware settings) directly addressing this skill.
+
+## 3. Defense-in-Depth & Architectural Recommendations
+- Prioritized hardening roadmap for long-term server posture."""
 
 
-def generate_report_gemini(api_key, system_prompt, scan, model=None, status_updater=None):
+def generate_report_gemini(api_key, system_prompt, scan, selected_skills=None, model=None, status_updater=None):
     from google import genai
     from google.genai import types
 
@@ -126,10 +176,20 @@ def generate_report_gemini(api_key, system_prompt, scan, model=None, status_upda
     clean_scan = dict(scan)
     clean_scan["target"] = "Application Server (Authorized Local Configuration Audit)"
 
+    skills_summary = "\n".join(
+        f"{idx}. [{s.get('category', 'SecOps')}] {s.get('display_title', s.get('name'))}: {s.get('short_desc', s.get('description', ''))}"
+        for idx, s in enumerate(selected_skills or [], 1)
+    )
+
     prompt = (
-        "Here is the defensive configuration audit data as JSON:\n\n"
+        f"TARGET ASSET: {clean_scan.get('target')}\n\n"
+        f"AUDIT SCOPE: The user has chosen these {len(selected_skills or [])} specific security skills to test:\n"
+        f"{skills_summary}\n\n"
+        "RECONNAISSANCE, CONFIGURATION AUDIT, AND TARGETED SKILL PROBE DATA (JSON):\n"
         f"{json.dumps(clean_scan, indent=2, default=str)}\n\n"
-        "Write the defensive security and hardening report."
+        "INSTRUCTIONS:\n"
+        f"Write a thorough, professional security audit report. YOU MUST dedicate a separate subsection under 'Section 2: In-Depth Analysis of Selected Security Skills' for EACH of the {len(selected_skills or [])} skills chosen above.\n"
+        "Analyze the reconnaissance data and skill probe results for each domain, and provide concrete remediation directives."
     )
 
     preferred_model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
@@ -162,20 +222,37 @@ def generate_report_gemini(api_key, system_prompt, scan, model=None, status_upda
     raise RuntimeError("Failed to generate report: no models were tried or succeeded.")
 
 
-def generate_report_anthropic(api_key, system_prompt, scan, model=None, status_updater=None):
+def generate_report_anthropic(api_key, system_prompt, scan, selected_skills=None, model=None, status_updater=None):
     import anthropic
 
     client = anthropic.Anthropic(api_key=api_key)
     chosen_model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MODEL
     if status_updater:
         status_updater(f"Consulting Claude reasoning engine ({chosen_model})...")
+
+    skills_summary = "\n".join(
+        f"{idx}. [{s.get('category', 'SecOps')}] {s.get('display_title', s.get('name'))}: {s.get('short_desc', s.get('description', ''))}"
+        for idx, s in enumerate(selected_skills or [], 1)
+    )
+
+    user_prompt = (
+        f"TARGET ASSET: {scan.get('target')}\n\n"
+        f"AUDIT SCOPE: The user has chosen these {len(selected_skills or [])} specific security skills to test:\n"
+        f"{skills_summary}\n\n"
+        "RECONNAISSANCE, CONFIGURATION AUDIT, AND TARGETED SKILL PROBE DATA (JSON):\n"
+        f"{json.dumps(scan, indent=2, default=str)}\n\n"
+        "INSTRUCTIONS:\n"
+        f"Write a thorough, professional security audit report. YOU MUST dedicate a separate subsection under 'Section 2: In-Depth Analysis of Selected Security Skills' for EACH of the {len(selected_skills or [])} skills chosen above.\n"
+        "Analyze the reconnaissance data and skill probe results for each domain, and provide concrete remediation directives."
+    )
+
     response = client.messages.create(
         model=chosen_model,
-        max_tokens=2000,
+        max_tokens=3000,
         system=system_prompt,
         messages=[{
             "role": "user",
-            "content": f"Here is the raw scan data as JSON:\n\n{json.dumps(scan, indent=2, default=str)}\n\nWrite the report.",
+            "content": user_prompt,
         }],
     )
     return "".join(block.text for block in response.content if block.type == "text")
@@ -229,7 +306,7 @@ def display_welcome_banner():
      \\  /\\  /  __/ |_) |  ____) |  __/ (__| |_| | |  | | |_| |_| |
       \\/  \\/ \\___|_.__/  |_____/ \\___|\\___|\\__,_|_|  |_|\\__|\\__, |
                                                              __/ |
-  [bold cyan]-- DEFENSIVE WEB SECURITY & SERVER HARDENING AGENT --[/bold cyan]   |___/ 
+    [bold cyan]-- DEFENSIVE WEB SECURITY & SERVER HARDENING AGENT --[/bold cyan]   |___/ 
 [/bold bright_cyan]"""
     console.print(banner_ascii)
 
@@ -312,15 +389,27 @@ def display_recon_summary(scan: dict, matched_skills: list):
     else:
         table.add_row("Sensitive Paths", "[bold green]0 sensitive/backup paths accessible[/bold green]")
 
-    # Matched Skills
-    skills_names = [s["name"] for s in matched_skills]
-    table.add_row("Matched Skills", f"[cyan]{', '.join(skills_names)}[/cyan]")
+    # Targeted Skill Probes Telemetry
+    skill_probes = scan.get("skill_probes", {})
+    if skill_probes:
+        probe_items = []
+        for s_key, s_data in skill_probes.items():
+            if isinstance(s_data, dict) and "verdict" in s_data:
+                verdict = s_data["verdict"]
+                color = "green" if any(w in verdict for w in ["Secure", "Protected", "Hardened"]) else "yellow" if "No" in verdict else "red"
+                probe_items.append(f"[{color}]{verdict}[/{color}] ([dim]{s_key}[/dim])")
+        if probe_items:
+            table.add_row("Skill Probe Telemetry", "\n".join(f"• {p}" for p in probe_items))
+
+    # Active Skills
+    skills_names = [f"[{s.get('category', 'SecOps')}] {s.get('display_title', s.get('name'))}" for s in matched_skills]
+    table.add_row("Active Audit Skills", "\n".join(f"• [cyan]{name}[/cyan]" for name in skills_names))
 
     console.print(table)
     console.print()
 
 
-def execute_scan_workflow(target_url: str):
+def execute_scan_workflow(target_url: str, selected_skills: list = None):
     """Run full reconnaissance and report generation with live animated spinners."""
     parsed = urlparse(target_url)
     hostname = parsed.hostname or target_url
@@ -350,13 +439,17 @@ def execute_scan_workflow(target_url: str):
         scan_result["exposed_paths"] = check_exposed_paths(target_url)
         console.print(" [bold green]✓[/bold green] Sensitive configuration exposure scan complete")
 
-        # Step 4: Loading & matching skills
-        status.update("[bold cyan]Stage 4/5:[/] Loading cybersecurity skills and mapping defensive procedures...")
-        skills = load_all_skills()
-        full_catalog = build_catalog_summary(skills)
-        kws = keywords_from_scan(scan_result)
-        relevant_skills = pick_relevant_skills(skills, kws, max_skills=6)
-        console.print(f" [bold green]✓[/bold green] Selected {len(relevant_skills)} defensive hardening procedures")
+        # Step 4: Loading & matching skills and running targeted probes
+        status.update("[bold cyan]Stage 4/5:[/] Running targeted skill probes & activating defensive procedures...")
+        if not selected_skills:
+            skills = load_all_skills()
+            kws = keywords_from_scan(scan_result)
+            selected_skills = pick_relevant_skills(skills, kws, max_skills=5)
+        
+        # Execute safe, targeted diagnostic probes based directly on user-selected skills
+        scan_result["skill_probes"] = run_targeted_skill_probes(target_url, selected_skills, scan_result.get("http"))
+        full_catalog = build_catalog_summary(selected_skills)
+        console.print(f" [bold green]✓[/bold green] Executed targeted probes for {len(selected_skills)} active skills")
 
         # Step 5: AI Hardening Report Synthesis
         provider, api_key = get_active_provider_info()
@@ -369,21 +462,21 @@ def execute_scan_workflow(target_url: str):
                 provider = "gemini"
 
         status.update(f"[bold cyan]Stage 5/5:[/] Synthesizing hardening report using [bold white]{provider.capitalize()}[/]...")
-        system_prompt = build_system_prompt(relevant_skills, full_catalog)
+        system_prompt = build_system_prompt(selected_skills, full_catalog)
 
         def update_msg(msg):
             status.update(f"[bold cyan]Stage 5/5:[/] {msg}")
 
         if provider == "gemini":
-            report_text = generate_report_gemini(api_key, system_prompt, scan_result, status_updater=update_msg)
+            report_text = generate_report_gemini(api_key, system_prompt, scan_result, selected_skills=selected_skills, status_updater=update_msg)
         else:
-            report_text = generate_report_anthropic(api_key, system_prompt, scan_result, status_updater=update_msg)
+            report_text = generate_report_anthropic(api_key, system_prompt, scan_result, selected_skills=selected_skills, status_updater=update_msg)
 
         console.print(f" [bold green]✓[/bold green] Hardening report generated successfully via {provider.capitalize()}")
 
     console.print()
     # Display Recon Table
-    display_recon_summary(scan_result, relevant_skills)
+    display_recon_summary(scan_result, selected_skills)
 
     # Render Report in Terminal
     console.print(
@@ -395,7 +488,7 @@ def execute_scan_workflow(target_url: str):
         )
     )
 
-    return scan_result, report_text, relevant_skills
+    return scan_result, report_text, selected_skills
 
 
 def handle_export_menu(target_url: str, scan_data: dict, report_text: str, matched_skills: list):
@@ -534,8 +627,38 @@ def main():
             console.print("[bold red]Invalid URL format. Please provide a valid address (e.g. https://example.com or example.com)[/bold red]\n")
             continue
 
+        # Interactive Skill Selection
+        all_skills = load_all_skills()
+        console.print("\n[bold cyan]Choose the security audit focus for this target...[/bold cyan]")
         try:
-            scan_data, report_text, matched_skills = execute_scan_workflow(target)
+            selected_skills = interactive_select_skills(all_skills, min_skills=1, max_skills=5)
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[bold yellow]Selection interrupted. Exiting...[/bold yellow]")
+            break
+
+        if not selected_skills:
+            console.print("[bold yellow]No skills selected. Returning to target prompt...[/bold yellow]\n")
+            continue
+
+        # Render Selected Skills Confirmation Badge Panel
+        selected_table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2))
+        for idx, s in enumerate(selected_skills, 1):
+            selected_table.add_row(
+                f"[bold cyan]{idx}.[/bold cyan]",
+                f"[bold white][{s['category']}][/bold white] [bright_cyan]{s['display_title']}[/bright_cyan]",
+                f"[dim]{s['short_desc']}[/dim]"
+            )
+
+        console.print(Panel(
+            selected_table,
+            title=f"[bold bright_green]🎯 Active Audit Scope ({len(selected_skills)}/5 Skills Selected)[/bold bright_green]",
+            border_style="green",
+            padding=(1, 2)
+        ))
+        console.print()
+
+        try:
+            scan_data, report_text, matched_skills = execute_scan_workflow(target, selected_skills=selected_skills)
             keep_running = handle_export_menu(target, scan_data, report_text, matched_skills)
             if not keep_running:
                 break

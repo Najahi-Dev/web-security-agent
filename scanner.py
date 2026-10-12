@@ -119,7 +119,151 @@ def check_exposed_paths(base_url):
     return findings
 
 
-def run_full_scan(target_url):
+def run_targeted_skill_probes(target_url, selected_skills, http_data=None):
+    """
+    Performs safe, non-intrusive targeted diagnostic probes based directly
+    on which cybersecurity skills the user selected.
+    Returns a dict mapping skill_name -> targeted evidence & observation.
+    """
+    probes = {}
+    if not selected_skills:
+        return probes
+
+    headers = (http_data or {}).get("headers", {})
+    lower_headers = {k.lower(): v for k, v in headers.items()}
+    cookies = (http_data or {}).get("cookies", [])
+
+    selected_names = set()
+    for s in selected_skills:
+        if isinstance(s, dict):
+            selected_names.add(s.get("name", ""))
+        else:
+            selected_names.add(str(s))
+
+    # 1. CORS Probe
+    if "testing-cors-misconfiguration" in selected_names:
+        try:
+            cors_resp = requests.options(
+                target_url,
+                headers={"Origin": "https://unauthorized-origin.test", "Access-Control-Request-Method": "GET"},
+                timeout=TIMEOUT,
+            )
+            cors_headers = {k.lower(): v for k, v in cors_resp.headers.items()}
+            acao = cors_headers.get("access-control-allow-origin") or lower_headers.get("access-control-allow-origin")
+            acac = cors_headers.get("access-control-allow-credentials") or lower_headers.get("access-control-allow-credentials")
+            probes["testing-cors-misconfiguration"] = {
+                "probe_origin_sent": "https://unauthorized-origin.test",
+                "access_control_allow_origin": acao or "None",
+                "access_control_allow_credentials": acac or "None",
+                "is_wildcard": bool(acao == "*"),
+                "is_origin_reflected": bool(acao == "https://unauthorized-origin.test"),
+                "verdict": "Permissive / Insecure CORS" if (acao == "*" or acao == "https://unauthorized-origin.test") else "Secure / No Permissive CORS Detected",
+            }
+        except Exception as e:
+            probes["testing-cors-misconfiguration"] = {"error": str(e)}
+
+    # 2. Host Header Probe
+    if "testing-for-host-header-injection" in selected_names:
+        try:
+            evil_host = "security-audit-probe.internal"
+            host_resp = requests.get(
+                target_url,
+                headers={"Host": evil_host, "X-Forwarded-Host": evil_host},
+                timeout=TIMEOUT,
+                allow_redirects=False,
+            )
+            reflected_in_loc = evil_host in host_resp.headers.get("Location", "")
+            reflected_in_body = evil_host in host_resp.text[:2000]
+            probes["testing-for-host-header-injection"] = {
+                "injected_host_tested": evil_host,
+                "response_status_code": host_resp.status_code,
+                "reflected_in_redirect_location": reflected_in_loc,
+                "reflected_in_response_body": reflected_in_body,
+                "verdict": "Vulnerable to Host Header Poisoning" if (reflected_in_loc or reflected_in_body) else "Protected / Host Header Rejected or Ignored",
+            }
+        except Exception as e:
+            probes["testing-for-host-header-injection"] = {"error": str(e)}
+
+    # 3. Clickjacking & Frame Protection Probe
+    if "performing-clickjacking-attack-test" in selected_names:
+        xfo = lower_headers.get("x-frame-options")
+        csp = lower_headers.get("content-security-policy", "")
+        has_frame_ancestors = "frame-ancestors" in csp.lower()
+        is_blocked = (xfo in ["DENY", "SAMEORIGIN"]) or has_frame_ancestors
+        probes["performing-clickjacking-attack-test"] = {
+            "x_frame_options": xfo or "MISSING",
+            "csp_frame_ancestors": "PRESENT" if has_frame_ancestors else "MISSING",
+            "frame_embedding_blocked": is_blocked,
+            "verdict": "Protected Against Clickjacking" if is_blocked else "Vulnerable to UI Redressing / Clickjacking",
+        }
+
+    # 4. XSS & Client-Side Protections Probe
+    if "testing-for-xss-vulnerabilities" in selected_names:
+        csp = lower_headers.get("content-security-policy", "")
+        has_csp = bool(csp)
+        has_unsafe_inline = "'unsafe-inline'" in csp.lower()
+        has_unsafe_eval = "'unsafe-eval'" in csp.lower()
+        insecure_cookies = [c["name"] for c in cookies if not c.get("httponly")]
+        probes["testing-for-xss-vulnerabilities"] = {
+            "csp_present": has_csp,
+            "csp_allows_unsafe_inline": has_unsafe_inline,
+            "csp_allows_unsafe_eval": has_unsafe_eval,
+            "non_httponly_cookies_exposed_to_js": insecure_cookies,
+            "x_content_type_options": lower_headers.get("x-content-type-options", "MISSING"),
+            "verdict": "Defenses Hardened" if (has_csp and not has_unsafe_inline and not insecure_cookies) else "Weak Client Protections / Elevates XSS Risk",
+        }
+
+    # 5. Rate Limiting Probe
+    if any(k in selected_names for k in ["implementing-api-rate-limiting-and-throttling", "performing-api-rate-limiting-bypass"]):
+        rate_headers = {
+            k: v for k, v in lower_headers.items()
+            if any(term in k for term in ["ratelimit", "rate-limit", "retry-after"])
+        }
+        probes["api-rate-limiting"] = {
+            "rate_limit_headers_detected": rate_headers if rate_headers else "None Detected",
+            "verdict": "Rate-Limiting Directives Present" if rate_headers else "No Standard Rate-Limiting Headers Exposed",
+        }
+
+    # 6. OAuth / Session / Auth Probe
+    if any(k in selected_names for k in [
+        "configuring-oauth2-authorization-flow",
+        "detecting-oauth-token-theft",
+        "exploiting-oauth-misconfiguration",
+        "performing-oauth-scope-minimization-review",
+        "exploiting-idor-vulnerabilities",
+        "exploiting-broken-function-level-authorization",
+        "detecting-broken-object-property-level-authorization"
+    ]):
+        auth_cookies = [c for c in cookies if any(term in c["name"].lower() for term in ["auth", "token", "session", "sess", "jwt", "id", "user"])]
+        cookie_flaws = []
+        for c in auth_cookies:
+            if not c.get("secure"):
+                cookie_flaws.append(f"{c['name']} (Missing Secure flag)")
+            if not c.get("httponly"):
+                cookie_flaws.append(f"{c['name']} (Missing HttpOnly flag)")
+            if not c.get("samesite"):
+                cookie_flaws.append(f"{c['name']} (Missing SameSite attribute)")
+
+        probes["auth-session-security"] = {
+            "identified_auth_session_cookies": [c["name"] for c in auth_cookies],
+            "cookie_configuration_deficiencies": cookie_flaws if cookie_flaws else "None (Flags Securely Configured)",
+            "www_authenticate_header": lower_headers.get("www-authenticate", "None"),
+        }
+
+    # 7. SSL / TLS Assessment Probe
+    if any(k in selected_names for k in ["performing-ssl-tls-security-assessment", "configuring-tls-1-3-for-secure-communications", "performing-ssl-certificate-lifecycle-management"]):
+        hsts = lower_headers.get("strict-transport-security", "")
+        probes["ssl-tls-hardening"] = {
+            "hsts_present": bool(hsts),
+            "hsts_preload": "preload" in hsts.lower(),
+            "hsts_subdomains": "includesubdomains" in hsts.lower(),
+            "hsts_header_value": hsts or "MISSING",
+        }
+
+    return probes
+
+
+def run_full_scan(target_url, selected_skills=None):
     parsed = urlparse(target_url)
     hostname = parsed.hostname
 
@@ -133,5 +277,6 @@ def run_full_scan(target_url):
         result["tls"] = check_tls(hostname)
 
     result["exposed_paths"] = check_exposed_paths(target_url)
+    result["skill_probes"] = run_targeted_skill_probes(target_url, selected_skills, result["http"])
 
     return result

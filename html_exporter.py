@@ -45,6 +45,10 @@ def generate_html_report(target_url: str, scan_data: dict, report_markdown: str,
     
     skills = matched_skills or []
     skills_count = len(skills)
+    skills_tags_html = "".join(
+        f'<span class="hero-pill" style="margin: 0.2rem 0.3rem 0.2rem 0; font-size: 0.72rem; text-transform: none;">🛡️ [{s.get("category", "SecOps") if isinstance(s, dict) else "SecOps"}] {s.get("display_title", s.get("name", str(s))) if isinstance(s, dict) else str(s)}</span>'
+        for s in skills
+    )
 
     # Calculate defensive score & rating
     penalty = (missing_count * 5) + (exposed_count * 15)
@@ -699,6 +703,10 @@ def generate_html_report(target_url: str, scan_data: dict, report_markdown: str,
           <span class="meta-value">{skills_count} SecOps Modules</span>
         </div>
       </div>
+      {f'''<div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-subtle); display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem;">
+        <span style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; margin-right: 0.5rem;">Audit Focus:</span>
+        {skills_tags_html}
+      </div>''' if skills_tags_html else ''}
     </section>
 
     <section class="dashboard-grid">
