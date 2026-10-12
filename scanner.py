@@ -7,6 +7,8 @@ It never attempts to exploit anything, brute force anything, or send
 attack payloads - it just collects facts for the AI agent to reason
 about using the cybersecurity skill library.
 """
+import os
+import glob
 import socket
 import ssl
 import datetime
@@ -258,6 +260,68 @@ def run_targeted_skill_probes(target_url, selected_skills, http_data=None):
             "hsts_preload": "preload" in hsts.lower(),
             "hsts_subdomains": "includesubdomains" in hsts.lower(),
             "hsts_header_value": hsts or "MISSING",
+        }
+
+    # 8. DevSecOps Secrets Scanning Probe
+    if "implementing-secrets-scanning-in-ci-cd" in selected_names:
+        workflow_found = False
+        precommit_found = False
+        gitleaks_cfg_found = False
+        details = []
+
+        # Check local repository / workspace
+        local_workflows = glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml")
+        for wf in local_workflows:
+            try:
+                with open(wf, "r", encoding="utf-8") as f:
+                    content = f.read().lower()
+                    if "gitleaks" in content or "trufflehog" in content or "secret" in content:
+                        workflow_found = True
+                        details.append(f"Local CI/CD Workflow ({wf})")
+            except Exception:
+                pass
+
+        if os.path.exists(".pre-commit-config.yaml"):
+            try:
+                with open(".pre-commit-config.yaml", "r", encoding="utf-8") as f:
+                    if "gitleaks" in f.read().lower():
+                        precommit_found = True
+                        details.append("Local pre-commit hook (.pre-commit-config.yaml)")
+            except Exception:
+                pass
+
+        if os.path.exists(".gitleaks.toml"):
+            gitleaks_cfg_found = True
+            details.append("Local Gitleaks allowlist & configuration (.gitleaks.toml)")
+
+        # Check remote GitHub repo if target_url points to GitHub
+        parsed_target = urlparse(target_url)
+        if "github.com" in (parsed_target.hostname or ""):
+            parts = [p for p in parsed_target.path.strip("/").split("/") if p]
+            if len(parts) >= 2:
+                owner, repo = parts[0], parts[1]
+                for branch in ["main", "master"]:
+                    raw_base = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}"
+                    try:
+                        res = requests.get(f"{raw_base}/.github/workflows/secrets-scan.yml", timeout=3)
+                        if res.status_code == 200:
+                            workflow_found = True
+                            details.append(f"Remote GitHub Workflow ({branch}/.github/workflows/secrets-scan.yml)")
+                            break
+                    except Exception:
+                        pass
+
+        is_hardened = workflow_found and (precommit_found or gitleaks_cfg_found)
+        probes["implementing-secrets-scanning-in-ci-cd"] = {
+            "secrets_ci_workflow_detected": workflow_found,
+            "pre_commit_hook_configured": precommit_found,
+            "gitleaks_allowlist_configured": gitleaks_cfg_found,
+            "detected_mechanisms": details if details else ["None Detected"],
+            "verdict": (
+                "Hardened: Automated Gitleaks CI/CD workflow and pre-commit hooks are configured and active."
+                if is_hardened
+                else ("Partially Configured: Some secret scanning controls detected." if (workflow_found or precommit_found) else "Not Configured: No automated secret scanning workflow or pre-commit hook detected.")
+            ),
         }
 
     return probes

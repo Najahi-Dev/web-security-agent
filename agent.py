@@ -67,7 +67,7 @@ from html_exporter import generate_html_report
 console = Console()
 
 DEFAULT_ANTHROPIC_MODEL = "claude-3-5-sonnet-20241022"
-DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 REPORTS_DIR = "reports"
 
 
@@ -159,9 +159,9 @@ Your audit report MUST be structured directly around the chosen skills. Do NOT o
 For EACH chosen skill:
 ### [Skill Number & Title]
 - **Current Assessment Status:** [Critical / High / Medium / Low / Hardened / Warning]
-- **Reconnaissance & Probe Observations:** Specific technical evidence observed (headers, cookies, TLS ciphers, probe responses).
+- **Reconnaissance & Probe Observations:** Specific technical evidence observed (headers, cookies, TLS ciphers, probe responses). If the probe data confirms that defenses are already active (e.g. CI/CD secret scanning workflows, pre-commit hooks, or hardened security headers), cite them clearly as active and verified.
 - **Vulnerability & Threat Analysis:** Real-world impact if an attacker attempts this vector against this application.
-- **Production Remediation Directives:** Concrete, copy-pasteable configuration blocks (Nginx/Apache/Cloudflare directives, code changes, or middleware settings) directly addressing this skill.
+- **Production Remediation Directives:** If the probe indicates missing controls, provide concrete configuration blocks. If the probe confirms the defense is ALREADY hardened and configured (e.g., automated secrets scanning in CI/CD and pre-commit hooks are detected), mark the status as 'Hardened', acknowledge the existing implementation, and provide maintenance or operational best practices rather than falsely claiming it is missing.
 
 ## 3. Defense-in-Depth & Architectural Recommendations
 - Prioritized hardening roadmap for long-term server posture."""
@@ -193,7 +193,7 @@ def generate_report_gemini(api_key, system_prompt, scan, selected_skills=None, m
     )
 
     preferred_model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
-    candidates = [preferred_model, "gemini-3.5-flash-lite", "gemini-3-flash-preview", "gemini-3.5-flash"]
+    candidates = [preferred_model, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.5-flash-lite"]
     models_to_try = []
     for m in candidates:
         if m and m not in models_to_try:
